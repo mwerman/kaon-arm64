@@ -1,61 +1,68 @@
-name: Build AppImage
-
+name: Kaon AppImage arm64
 on:
-  push:
-
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Kaon branch or tag
+        default: master
+permissions:
+  contents: write
 jobs:
-  linux:
-    name: AppImage
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-
+  build:
+    runs-on: ubuntu-24.04-arm
+    container: ubuntu:26.04
+    env:
+      APPIMAGE_EXTRACT_AND_RUN: "1"
+      ARCH: aarch64
     steps:
-      - name: Install Qt
-        uses: jurplel/install-qt-action@v4
+      - name: Install dependencies
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y git ca-certificates curl file cmake ninja-build g++ pkg-config imagemagick desktop-file-utils patchelf \
+            qt6-base-dev qt6-declarative-dev qt6-tools-dev qt6-svg-dev qt6-wayland
+          for p in qml6-module-qtquick qml6-module-qtquick-controls qml6-module-qtquick-layouts qml6-module-qtquick-templates qml6-module-qtquick-window qml6-module-qtquick-dialogs qml6-module-qtqml-workerscript qml6-module-qt-labs-platform qml6-module-qt-labs-settings qml6-module-qt-labs-folderlistmodel; do
+            DEBIAN_FRONTEND=noninteractive apt-get install -y "$p" || true
+          done
+      - uses: actions/checkout@v4
         with:
-          version: '6.10.*'
-          cache: true
-
-      - name: Checkout code
-        uses: actions/checkout@v5
-
+          repository: LorenDB/kaon
+          ref: ${{ inputs.ref }}
+          submodules: recursive
+          path: kaon
       - name: Build
         run: |
-          mkdir appdir
-          mkdir build
-          cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_INSTALL_PREFIX=/usr .
-          cmake --build build --config RelWithDebInfo -j $(nproc)
-
-      - name: Install LinuxDeploy
-        uses: miurahr/install-linuxdeploy-action@v1.8.0
-        with:
-          plugins: qt appimage
-          dir: ${{ github.workspace }}
-
-      - name: Install packages
+          cmake -S kaon -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr
+          cmake --build build
+          DESTDIR="$PWD/AppDir" cmake --install build || true
+          [ -x AppDir/usr/bin/kaon ] || install -Dm755 build/src/kaon AppDir/usr/bin/kaon
+      - name: Remove unneeded Qt SQL drivers
         run: |
-          sudo DEBIAN_FRONTEND=noninteractive apt-add-repository universe
-          sudo DEBIAN_FRONTEND=noninteractive apt install libfuse2t64 -y
-
-      - name: Build release package
+          for d in $(find /usr/lib /opt "$HOME" -type d -path '*/plugins/sqldrivers' 2>/dev/null); do
+            echo "Cleaning $d"
+            find "$d" -name 'libqsql*' ! -name 'libqsqlite.so' -delete
+          done
+      - name: Package AppImage
         run: |
-          # remove problematic QSql drivers
-          # TODO: use variable instead of /home/runner/work/kaon
-          rm -f /home/runner/work/kaon/Qt/6.*/gcc_64/plugins/sqldrivers/libqsqlmimer.so
-          rm -f /home/runner/work/kaon/Qt/6.*/gcc_64/plugins/sqldrivers/libqsqloci.so
-
-          QML_SOURCES_PATHS=src linuxdeploy-x86_64.AppImage \
-              --plugin qt \
-              --output appimage \
-              --desktop-file dev.lorendb.kaon.desktop \
-              --icon-file src/qml/icons/kaon.svg \
-              --executable build/src/kaon \
-              --appdir appdir
-
-      - name: Upload release package
-        uses: actions/upload-artifact@v4
+          DESKTOP=kaon/dev.lorendb.kaon.desktop
+          ICON="$(grep -m1 '^Icon=' "$DESKTOP" | cut -d= -f2)"
+          ICON="${ICON:-kaon}"
+          ICONARG=""
+          if ! find AppDir -name "$ICON.*" | grep -q .; then
+            mkdir -p icons
+            convert -size 256x256 xc:'#3a4a5a' "icons/$ICON.png"
+            ICONARG="--icon-file icons/$ICON.png"
+          fi
+          mkdir tools
+          curl -L -o tools/linuxdeploy-aarch64.AppImage https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-aarch64.AppImage
+          curl -L -o tools/linuxdeploy-plugin-qt-aarch64.AppImage https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-aarch64.AppImage
+          chmod +x tools/*.AppImage
+          export QMAKE="$(command -v qmake6)"
+          export QML_SOURCES_PATHS="$PWD/kaon/src"
+          ./tools/linuxdeploy-aarch64.AppImage --appdir AppDir --desktop-file "$DESKTOP" $ICONARG --plugin qt --output appimage
+          mv *.AppImage Kaon-arm64.AppImage
+      - name: Check architecture
+        run: file Kaon-arm64.AppImage AppDir/usr/bin/kaon
+      - uses: softprops/action-gh-release@v2
         with:
-          name: AppImage
-          path: Kaon-x86_64.AppImage
-          retention-days: 1
+          tag_name: kaon-arm64-build
+          files: Kaon-arm64.AppImage
