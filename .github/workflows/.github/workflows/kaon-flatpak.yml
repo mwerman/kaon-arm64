@@ -1,0 +1,64 @@
+name: Kaon Flatpak arm64
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Kaon branch or tag
+        default: master
+      kde:
+        description: KDE runtime version
+        default: "6.10"
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: LorenDB/kaon
+          ref: ${{ inputs.ref }}
+          submodules: recursive
+          path: kaon
+      - run: sudo apt-get update && sudo apt-get install -y flatpak flatpak-builder
+      - name: Write manifest
+        run: |
+          cat > flatpak-kaon.yml <<'EOF'
+          app-id: dev.lorendb.kaon
+          runtime: org.kde.Platform
+          runtime-version: '${{ inputs.kde }}'
+          sdk: org.kde.Sdk
+          command: kaon
+          finish-args:
+            - --share=ipc
+            - --share=network
+            - --socket=x11
+            - --socket=wayland
+            - --device=dri
+            - --filesystem=~/.local/share/Steam
+            - --filesystem=~/.steam
+            - --filesystem=~/.config/heroic
+            - --filesystem=~/Games
+          modules:
+            - name: kaon
+              buildsystem: simple
+              build-commands:
+                - cmake -S . -B _build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/app
+                - cmake --build _build
+                - install -Dm755 _build/src/kaon /app/bin/kaon
+                - install -Dm644 dev.lorendb.kaon.desktop /app/share/applications/dev.lorendb.kaon.desktop
+              sources:
+                - type: dir
+                  path: kaon
+                  skip:
+                    - .git
+          EOF
+      - name: Build flatpak
+        run: |
+          flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+          flatpak-builder --user --arch=aarch64 --force-clean --disable-rofiles-fuse --install-deps-from=flathub --repo=repo build-dir flatpak-kaon.yml
+          flatpak build-bundle --arch=aarch64 --runtime-repo=https://dl.flathub.org/repo/flathub.flatpakrepo repo kaon-arm64.flatpak dev.lorendb.kaon
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: kaon-flatpak-arm64
+          files: kaon-arm64.flatpak
