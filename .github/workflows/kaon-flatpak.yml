@@ -44,6 +44,9 @@ jobs:
           modules:
             - name: kaon
               buildsystem: simple
+              build-options:
+                build-args:
+                  - --share=network
               build-commands:
                 - cmake -S . -B _build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/app
                 - cmake --build _build
